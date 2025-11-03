@@ -86,7 +86,7 @@ async function generateQuestionsLLM(topic = 'general knowledge', count = 5, diff
   const difficultyNum = Math.max(1, Math.min(10, Number(difficulty) || 3));
   const difficultyDesc = `難易度 ${difficultyNum}（1=小学生レベル、10=大学専門科目レベル）`;
   const genreDesc = genre ? `ジャンル: ${genre}` : '';
-  const prompt = `以下の形式で返してください。余分な説明は一切不要です。必ずJSON配列のみを返し、他のテキストは含めないでください。\n\n出力形式: [ { "text": "問題文（日本語・短め）", "answer": "正解" }, ... ]\n\n指示: ${genreDesc} ${difficultyDesc} の条件に従い、出題者用の短いクイズ問題を日本語で${count}問生成してください。各問題は1文で、回答も併記してください。回答は必ず一意に定まるように問題を出してください。`;
+  const prompt = `以下の形式で返してください。余分な説明は一切不要です。必ずJSON配列のみを返し、他のテキストは含めないでください。\n\n出力形式: [ { "text": "問題文（日本語・短め）", "answer": "正解" }, ... ]\n\n指示: ${genreDesc} ${difficultyDesc} の条件に従い、出題者用の短いクイズ問題を日本語で${count}問生成してください。各問題は1文で、回答も併記してください。回答は必ず一意に定まるように問題を出してください。ハルシネーションの発生は許されないので、確実に事実に基づいた内容にしてください。`;
     // Instruct model to provide answers in hiragana only to support per-character input UI
     const promptWithHiragana = prompt + '\n\n注意: 出力される各オブジェクトの "answer" フィールドは必ずひらがなで記載してください。漢字やカタカナ、ローマ字は使用しないでください。';
     const example = `例: [{ "text": "日本の首都はどこですか？", "answer": "とうきょう" }]`;
