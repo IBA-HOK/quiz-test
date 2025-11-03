@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Quiz Buzzer - Player</title>
+  <style>
+    body{font-family:system-ui, -apple-system, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;display:flex;flex-direction:column;align-items:center;gap:12px;padding:20px}
+    #buzzer{font-size:2rem;padding:20px 40px;background:#ff5252;color:white;border:none;border-radius:8px}
+    #question{max-width:720px}
+  </style>
+</head>
+<body>
+  <h1>参加者画面（スマホ）</h1>
+  <div>
+    <label>ニックネーム: <input id="name" value="プレイヤー" /></label>
+  </div>
+  <div>
+    <label>ルームID: <input id="roomId" value="default-room" /></label>
+    <button id="joinBtn">参加</button>
+  </div>
+
+  <div id="question" style="text-align:center;">
+    <strong style="display:block">問題</strong>
+    <div id="qtext" style="font-size:1.4rem;margin:12px 0">まだ開始されていません</div>
+    <div id="answer" style="font-size:1.2rem;color:#1976d2;display:none;margin-top:8px">（回答は非表示）</div>
+    <div id="answerInput" style="margin-top:12px"></div>
+  </div>
+  <button id="buzzer">早押し！</button>
+
+  <div id="status"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/client.js"></script>
+</body>
+</html>

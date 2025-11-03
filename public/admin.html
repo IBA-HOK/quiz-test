@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Quiz Buzzer - Host</title>
+  <style>body{font-family:system-ui, -apple-system, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;padding:20px;max-width:900px;margin:auto}textarea{width:100%;height:120px}</style>
+</head>
+<body>
+  <h1>出題者画面</h1>
+  <div>
+    <label>ルームID: <input id="roomId" value="default-room" /></label>
+    <button id="joinBtn">管理を開始</button>
+  </div>
+
+  <div style="margin-top:12px">
+    <button id="qrBtn">QRを生成</button>
+    <div id="qr"></div>
+  </div>
+
+  <h3>モード</h3>
+  <button data-mode="human" class="modeBtn">人が読み上げる（早押しボタン）</button>
+  <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
+    <button data-mode="auto" class="modeBtn">機械が読み上げる（問題リスト）</button>
+    <label style="font-size:0.9rem">間隔秒: <input id="autoInterval" value="10" style="width:60px" /></label>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
+    <label style="font-size:0.9rem">残りが <input id="refillThreshold" value="2" style="width:40px" /> 件以下になったら</label>
+    <label style="font-size:0.9rem">自動生成数: <input id="refillCount" value="5" style="width:40px" /></label>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
+    <label style="font-size:0.9rem">ジャンル: <input id="llmGenre" placeholder="例: 歴史、科学、雑学" style="width:180px" /></label>
+    <label style="font-size:0.9rem">難易度: <input id="llmDifficulty" type="number" min="1" max="10" value="3" style="width:60px" /></label>
+  </div>
+  <div style="margin-top:8px">
+    <button id="forceRefill">手動で補充（テスト）</button>
+    <span id="forceRefillResult" style="margin-left:8px"></span>
+  </div>
+  <button data-mode="llm" class="modeBtn">LLMで自動生成</button>
+
+  <h3>問題編集（JSON配列）</h3>
+  <textarea id="questionsText">[ { "text": "東京は日本の首都は？", "answer": "東京" } ]</textarea>
+  <div><button id="setQs">問題セット</button> <button id="nextQ">次の問題送信</button></div>
+  <div style="margin-top:8px"><button id="revealAnswer">回答表示</button></div>
+  <div style="margin-top:12px"><button id="startGame">ゲーム開始</button></div>
+
+  <div id="log"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/client.js"></script>
+</body>
+</html>
