@@ -8,6 +8,10 @@
     body{font-family:system-ui, -apple-system, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;display:flex;flex-direction:column;align-items:center;gap:12px;padding:20px}
     #buzzer{font-size:2rem;padding:20px 40px;background:#ff5252;color:white;border:none;border-radius:8px}
     #question{max-width:720px}
+    .hidden{display:none !important}
+    /* typewriter cursor when question text is being revealed */
+    #qtext.typing::after { content: '|'; margin-left:6px; opacity:0.9; animation:blink 1s steps(1) infinite; }
+    @keyframes blink { 50% { opacity: 0 } }
   </style>
 </head>
 <body>
@@ -27,8 +31,11 @@
     <div id="answerInput" style="margin-top:12px"></div>
   </div>
   <button id="buzzer">早押し！</button>
+  <button id="cancelBuzz" class="hidden" style="display:block;margin-top:8px;font-size:1rem;padding:10px 14px;background:#f0f0f0;border:1px solid #ccc;border-radius:6px">やっぱなし</button>
 
+  <div id="countdown" style="font-weight:600;margin-top:8px"></div>
   <div id="status"></div>
+  <div id="othersTyping" style="margin-top:8px;font-size:0.95rem;color:#333;min-height:1.2em"></div>
 
   <script src="/socket.io/socket.io.js"></script>
   <script src="/client.js"></script>

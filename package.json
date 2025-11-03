@@ -16,7 +16,8 @@
   "@google/genai": "^0.6.0",
   "@google-cloud/aiplatform": "^1.18.0",
   "qrcode": "^1.5.1",
-  "socket.io": "^4.7.2"
+  "socket.io": "^4.7.2",
+  "socket.io-client": "^4.7.2"
   },
   "engines": {
     "node": ">=18"

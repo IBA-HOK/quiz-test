@@ -29,8 +29,13 @@
     <label style="font-size:0.9rem">自動生成数: <input id="refillCount" value="5" style="width:40px" /></label>
   </div>
   <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
-    <label style="font-size:0.9rem">ジャンル: <input id="llmGenre" placeholder="例: 歴史、科学、雑学" style="width:180px" /></label>
+    <label style="font-size:0.9rem">ジャンル: <input id="llmGenre" placeholder="例: 歴史、科学、雑学" style="width:160px" /></label>
     <label style="font-size:0.9rem">難易度: <input id="llmDifficulty" type="number" min="1" max="10" value="3" style="width:60px" /></label>
+    <label style="font-size:0.9rem">LLM自動間隔(秒): <input id="llmInterval" type="number" min="3" value="10" style="width:60px" /></label>
+    <label style="font-size:0.9rem">答え表示秒数: <input id="llmRevealMs" type="number" min="500" value="3000" style="width:80px" /></label>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
+    <label style="font-size:0.9rem">1文字あたりの回答時間(秒): <input id="perCharSec" type="number" min="0.5" step="0.5" value="3" style="width:80px" /></label>
   </div>
   <div style="margin-top:8px">
     <button id="forceRefill">手動で補充（テスト）</button>
