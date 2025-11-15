@@ -12,9 +12,14 @@ const io = new Server(server);
 const PORT = process.env.PORT || 3000;
 
 app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.json()); // for parsing POST body
 
 // Simple in-memory rooms store (for demo/prototyping)
 const rooms = {};
+
+// Simple in-memory cache for grounding responses (TTL: 60 seconds)
+const groundingCache = new Map();
+const CACHE_TTL_MS = 60 * 1000;
 
 app.get('/qr', async (req, res) => {
   const { url } = req.query;
@@ -25,6 +30,141 @@ app.get('/qr', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'qr error' });
+  }
+});
+
+// POST /api/generate - Generate content with Google Search grounding
+// 
+// SECURITY & TERMS OF SERVICE NOTES:
+// - API key is kept server-side only and never exposed to clients
+// - User prompts are validated for length and type
+// - searchEntryPoint HTML/CSS from Google must be rendered as-is (per ToS)
+// - User queries may be sent to Google Search (privacy consideration)
+// - Rate limiting should be implemented for production use
+// - XSS protection: Do not directly embed user-provided HTML
+//
+app.post('/api/generate', async (req, res) => {
+  try {
+    const { prompt, model } = req.body;
+    
+    // Validation
+    if (!prompt || typeof prompt !== 'string' || prompt.trim().length === 0) {
+      return res.status(400).json({ error: 'prompt is required and must be a non-empty string' });
+    }
+    
+    if (prompt.length > 4000) {
+      return res.status(400).json({ error: 'prompt is too long (max 4000 characters)' });
+    }
+    
+    // Check cache
+    const cacheKey = `${prompt}:${model || 'default'}`;
+    const cached = groundingCache.get(cacheKey);
+    if (cached && (Date.now() - cached.timestamp < CACHE_TTL_MS)) {
+      console.log('Returning cached grounding response');
+      return res.json(cached.data);
+    }
+    
+    // Check if genaiClient is available
+    if (!genaiClient) {
+      return res.status(500).json({ 
+        error: 'Gemini API client is not initialized. Set GEMINI_API_KEY environment variable.',
+        text: null,
+        groundingMetadata: null
+      });
+    }
+    
+    const modelId = model || process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+    
+    // Configure grounding tool
+    const groundingTool = {
+      googleSearch: {}
+    };
+    
+    const config = {
+      tools: [groundingTool]
+    };
+    
+    // Call Gemini API with grounding
+    const genReq = {
+      model: modelId,
+      contents: [{ parts: [{ text: prompt }] }],
+      config: config
+    };
+    
+    let response;
+    try {
+      response = await genaiClient.models.generateContent(genReq);
+    } catch (apiError) {
+      console.error('Gemini API call failed:', apiError);
+      return res.status(500).json({
+        error: 'Gemini API call failed: ' + (apiError.message || String(apiError)),
+        text: null,
+        groundingMetadata: null
+      });
+    }
+    
+    // Parse response
+    let text = '';
+    let groundingMetadata = null;
+    
+    // Extract text from response
+    if (response && typeof response.text === 'string') {
+      text = response.text;
+    } else if (response?.candidates && response.candidates.length) {
+      const cand = response.candidates[0];
+      if (cand?.content?.parts && cand.content.parts.length) {
+        text = cand.content.parts.map(p => p.text || '').join('');
+      }
+      
+      // Extract grounding metadata
+      if (cand.groundingMetadata) {
+        groundingMetadata = {
+          webSearchQueries: cand.groundingMetadata.webSearchQueries || [],
+          groundingChunks: (cand.groundingMetadata.groundingChunks || []).map(chunk => ({
+            uri: chunk.web?.uri || '',
+            title: chunk.web?.title || ''
+          })),
+          groundingSupports: (cand.groundingMetadata.groundingSupports || []).map(support => ({
+            segment: {
+              startIndex: support.segment?.startIndex || 0,
+              endIndex: support.segment?.endIndex || 0,
+              text: support.segment?.text || ''
+            },
+            groundingChunkIndices: support.groundingChunkIndices || []
+          })),
+          searchEntryPoint: cand.groundingMetadata.searchEntryPoint || null
+        };
+      }
+    }
+    
+    const result = {
+      text: text || '（回答を取得できませんでした）',
+      groundingMetadata: groundingMetadata
+    };
+    
+    // Cache the result
+    groundingCache.set(cacheKey, {
+      timestamp: Date.now(),
+      data: result
+    });
+    
+    // Clean old cache entries
+    const now = Date.now();
+    for (const [key, value] of groundingCache.entries()) {
+      if (now - value.timestamp > CACHE_TTL_MS) {
+        groundingCache.delete(key);
+      }
+    }
+    
+    return res.json(result);
+    
+  } catch (err) {
+    console.error('Unexpected error in /api/generate:', err);
+    return res.status(500).json({
+      error: 'Internal server error: ' + (err.message || String(err)),
+      text: null,
+      groundingMetadata: null
+    });
   }
 });
 
@@ -71,15 +211,19 @@ if (useGemini) {
   }
 }
 
-async function generateQuestionsLLM(topic = 'general knowledge', count = 5, difficulty = 3, genre = '') {
-  // fallback sample generator
-  const fallback = () => Array.from({ length: count }).map((_, i) => ({
-    id: `sample-${i + 1}`,
-    text: `サンプル問題 ${i + 1}: これは${topic}に関する問題です。`,
-    answer: 'さんぷるかいとう'
-  }));
+async function generateQuestionsLLM(topic = 'general knowledge', count = 5, difficulty = 3, genre = '', enableGrounding = true) {
+  // NOTE:
+  // - Do NOT return sample/fallback questions on failures anymore.
+  // - Retry the Gemini API multiple times with variable backoff until a valid
+  //   question set is produced or until the overall timeout is reached.
+  // - If Gemini client is not available, throw so callers can handle it and
+  //   avoid silently inserting sample questions.
 
-  if (!useGemini || !genaiClient) return fallback();
+  if (!useGemini || !genaiClient) {
+    throw new Error('Gemini API client is not available');
+  }
+
+  console.log(`Generating questions with grounding: ${enableGrounding ? 'ENABLED' : 'DISABLED'}`);
 
   // Strongly instruct the model to return only valid JSON array matching schema.
   // Difficulty guidance: 1 == elementary school, 10 == university specialist
@@ -92,119 +236,164 @@ async function generateQuestionsLLM(topic = 'general knowledge', count = 5, diff
     const example = `例: [{ "text": "日本の首都はどこですか？", "answer": "とうきょう" }]`;
   const fullPrompt = `${promptWithHiragana}\n\n${example}`;
 
-  try {
-    // Use Google GenAI client to generate content. The JS client supports a convenience
-    // method `models.generateContent` which returns a response with text or structured output.
+  // Helper function to call Gemini API with optional grounding
+  const callGeminiAPI = async (withGrounding = true, attemptNum = 1) => {
     const modelId = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-    let raw = '';
-    try {
-      // The client examples show calling generateContent with { model, contents }
-      const genReq = {
-        model: modelId,
-        // contents can be a string or array; newer examples use contents: [{ parts: [{ text: ... }] }]
-        contents: [{ parts: [{ text: fullPrompt }] }]
+    
+    const genReq = {
+      model: modelId,
+      contents: [{ parts: [{ text: fullPrompt }] }]
+    };
+    
+    // Add grounding tool if requested AND globally enabled
+    if (withGrounding && enableGrounding) {
+      genReq.config = {
+        tools: [{ googleSearch: {} }]
       };
+    }
+    
+    console.log(`Gemini API call attempt ${attemptNum} ${withGrounding && enableGrounding ? 'WITH' : 'WITHOUT'} grounding`);
+    
+    try {
       const response = await genaiClient.models.generateContent(genReq);
-
-      // Common response shapes: response.text, response.output, response.candidates, or nested content parts
+      
+      let raw = '';
+      let metadata = null;
+      
+      // Extract grounding metadata if available
+      if (response?.candidates && response.candidates[0]?.groundingMetadata) {
+        metadata = response.candidates[0].groundingMetadata;
+        console.log(`Grounding metadata found: ${metadata.groundingChunks?.length || 0} sources`);
+      }
+      
+      // Extract text from response - handle multiple possible structures
       if (response && typeof response.text === 'string') {
         raw = response.text;
       } else if (response?.candidates && response.candidates.length) {
         const cand = response.candidates[0];
-        raw = (cand?.content && cand.content[0] && cand.content[0].parts && cand.content[0].parts[0] && cand.content[0].parts[0].text) || JSON.stringify(cand);
+        // Try different nested structures
+        if (cand?.content?.parts && cand.content.parts.length > 0 && cand.content.parts[0].text) {
+          raw = cand.content.parts[0].text;
+        } else if (cand?.content && cand.content[0]?.parts && cand.content[0].parts[0]?.text) {
+          raw = cand.content[0].parts[0].text;
+        } else {
+          // No valid text found in expected structure
+          raw = JSON.stringify(cand);
+        }
       } else if (response?.output && response.output.length) {
-        // some clients use output -> content -> parts
         const out = response.output[0];
-        raw = (out?.content && out.content[0] && out.content[0].parts && out.content[0].parts[0] && out.content[0].parts[0].text) || JSON.stringify(out);
+        if (out?.content?.parts && out.content.parts[0]?.text) {
+          raw = out.content.parts[0].text;
+        } else if (out?.content && out.content[0]?.parts && out.content[0].parts[0]?.text) {
+          raw = out.content[0].parts[0].text;
+        } else {
+          raw = JSON.stringify(out);
+        }
       } else {
         raw = JSON.stringify(response);
       }
+      
+      // Validate that we got actual text content, not just JSON metadata
+      if (!raw || raw.trim().length === 0 || (raw.startsWith('{') && !raw.includes('['))) {
+        console.warn('Response did not contain text content, only metadata');
+        return { raw: '', metadata, success: false, error: new Error('No text content in response') };
+      }
+      
+      return { raw, metadata, success: true };
+    } catch (error) {
+      console.warn(`Gemini API call attempt ${attemptNum} failed:`, error.message);
+      return { raw: '', metadata: null, success: false, error };
+    }
+  };
+
+  // We'll implement a retry loop with exponential backoff + jitter.
+  // Stop when we obtain at least one valid question object.
+  const tryParse = (text) => {
+    try {
+      const arr = JSON.parse(text);
+      if (Array.isArray(arr)) return arr;
     } catch (e) {
-      console.warn('GenAI generateContent call failed', e);
-      return fallback();
+      // ignore
     }
+    return null;
+  };
 
-    // Attempt to parse JSON from the model output
-    const tryParse = (text) => {
-      try {
-        const arr = JSON.parse(text);
-        if (Array.isArray(arr)) return arr;
-      } catch (e) {
-        // ignore
-      }
-      return null;
-    };
-
-    // direct parse
-    let arr = tryParse(raw);
-    if (!arr) {
-      // try to extract JSON block between the first '[' and the last ']'
-      const start = raw.indexOf('[');
-      const end = raw.lastIndexOf(']');
-      if (start !== -1 && end !== -1 && end > start) {
-        const sub = raw.slice(start, end + 1);
-        arr = tryParse(sub);
-      }
-    }
-
-    if (arr && Array.isArray(arr)) {
-      // Normalize answers to hiragana and filter invalid entries
-      const processArray = (inArr) => {
-        const out = [];
-        for (let i = 0; i < inArr.length; i++) {
-          const q = inArr[i] || {};
-          const text = q.text || q.question || '';
-          const rawAns = (q.answer || q.answer_text || q.answerText || '');
-          const norm = normalizeToHiragana(rawAns || '');
-          if (norm && norm.length > 0) {
-            out.push({ id: `llm-${Date.now()}-${i}`, text: text, answer: norm });
-          }
+  const processArray = (inArr, metadata) => {
+    const out = [];
+    for (let i = 0; i < inArr.length; i++) {
+      const q = inArr[i] || {};
+      const text = q.text || q.question || '';
+      const rawAns = (q.answer || q.answer_text || q.answerText || '');
+      const norm = normalizeToHiragana(rawAns || '');
+      if (norm && norm.length > 0) {
+        const question = {
+          id: `llm-${Date.now()}-${i}`,
+          text: text,
+          answer: norm
+        };
+        if (metadata?.groundingChunks && metadata.groundingChunks.length > 0) {
+          question.sources = metadata.groundingChunks.map(chunk => ({
+            title: chunk.web?.title || 'Unknown',
+            uri: chunk.web?.uri || ''
+          })).filter(src => src.uri);
         }
-        return out;
-      };
+        out.push(question);
+      }
+    }
+    return out;
+  };
 
-      let results = processArray(arr);
-      // If not enough valid answers, try one retry to get more
-      if (results.length < count) {
-        console.log('generateQuestionsLLM: insufficient hiragana answers, retrying once');
-        try {
-          const retryReq = { model: modelId, contents: [{ parts: [{ text: fullPrompt }] }] };
-          const retryResp = await genaiClient.models.generateContent(retryReq);
-          let raw2 = '';
-          if (retryResp && typeof retryResp.text === 'string') raw2 = retryResp.text;
-          else if (retryResp?.candidates && retryResp.candidates.length) {
-            const cand = retryResp.candidates[0];
-            raw2 = (cand?.content && cand.content[0] && cand.content[0].parts && cand.content[0].parts[0] && cand.content[0].parts[0].text) || JSON.stringify(cand);
-          } else if (retryResp?.output && retryResp.output.length) {
-            const out = retryResp.output[0];
-            raw2 = (out?.content && out.content[0] && out.content[0].parts && out.content[0].parts[0] && out.content[0].parts[0].text) || JSON.stringify(out);
-          } else raw2 = JSON.stringify(retryResp);
+  const MAX_TOTAL_MS = 60 * 1000; // total retry window (60s)
+  const MAX_ATTEMPTS = 8;
+  const startTs = Date.now();
+  let attempt = 0;
+  let lastRaw = '';
+  let lastMetadata = null;
+  let lastErr = null;
 
-          let arr2 = tryParse(raw2);
-          if (!arr2) {
-            const s2 = raw2.indexOf('[');
-            const e2 = raw2.lastIndexOf(']');
-            if (s2 !== -1 && e2 !== -1 && e2 > s2) arr2 = tryParse(raw2.slice(s2, e2 + 1));
-          }
-          if (arr2 && Array.isArray(arr2)) {
-            const more = processArray(arr2);
-            results = results.concat(more).slice(0, count);
-          }
-        } catch (e) {
-          console.warn('generateQuestionsLLM retry failed', e);
+  while ((Date.now() - startTs) < MAX_TOTAL_MS && attempt < MAX_ATTEMPTS) {
+    attempt += 1;
+    // Try with grounding first, then optionally without in later attempts
+    const withGrounding = enableGrounding;
+    const res = await callGeminiAPI(withGrounding, attempt);
+    if (res.success) {
+      lastRaw = res.raw;
+      lastMetadata = res.metadata;
+      // attempt to parse
+      let arr = tryParse(lastRaw);
+      if (!arr) {
+        const s = lastRaw.indexOf('[');
+        const e = lastRaw.lastIndexOf(']');
+        if (s !== -1 && e !== -1 && e > s) {
+          const sub = lastRaw.slice(s, e + 1);
+          arr = tryParse(sub);
         }
       }
-
-      if (results && results.length) return results.slice(0, count);
+      if (arr && Array.isArray(arr)) {
+        const results = processArray(arr, lastMetadata);
+        if (results && results.length > 0) {
+          // Return up to requested count. Caller (maybeRefill) will append.
+          return results.slice(0, count);
+        }
+      }
+      // If parsing succeeded but no valid entries, treat as failure and retry
+      lastErr = new Error('Parsed response contained no valid questions');
+    } else {
+      lastErr = res.error || new Error('Gemini API call failed');
     }
 
-  console.warn('Could not parse GenAI response, falling back to sample questions. Raw output:', raw);
-    return fallback();
-
-  } catch (err) {
-    console.warn('Gemini generation failed — falling back to sample questions', err);
-    return fallback();
+    // Backoff before next attempt
+    const base = Math.min(16000, 1000 * Math.pow(2, attempt - 1));
+    const jitter = Math.floor(Math.random() * 500);
+    const waitMs = base + jitter;
+    console.log(`generateQuestionsLLM attempt ${attempt} failed, waiting ${waitMs}ms before retrying`);
+    await new Promise(resolve => setTimeout(resolve, waitMs));
   }
+
+  // If we get here, we exhausted retries/timeout — throw to avoid returning sample/fallback.
+  const errMsg = lastErr ? String(lastErr) : 'generateQuestionsLLM: retries exhausted';
+  console.warn(errMsg, 'lastRaw:', lastRaw ? (lastRaw.slice(0, 240) + (lastRaw.length > 240 ? '...' : '')) : '');
+  throw new Error(errMsg);
 }
 
 // Normalize answer: convert Katakana -> Hiragana, keep hiragana and long mark, remove others
@@ -228,13 +417,52 @@ function normalizeToHiragana(s) {
   return out;
 }
 
+// Helper to check if room has active players (excluding host)
+function hasActivePlayers(room) {
+  if (!room || !room.players) return false;
+  return Object.keys(room.players).length > 0;
+}
+
+// Helper to pause LLM timers when no players
+function pauseLLMTimers(room, roomId) {
+  if (!room || !room.llmTimer) return;
+  
+  console.log(`Pausing LLM timers for room ${roomId} - no active players`);
+  
+  if (room.llmTimer.questionTimer) {
+    try { clearTimeout(room.llmTimer.questionTimer); } catch(e){}
+    room.llmTimer.questionTimer = null;
+  }
+  if (room.llmTimer.revealTimer) {
+    try { clearTimeout(room.llmTimer.revealTimer); } catch(e){}
+    room.llmTimer.revealTimer = null;
+  }
+  
+  room.llmPaused = true;
+  io.to(roomId).emit('llm-paused', { reason: 'no-players' });
+}
+
 // Create a sanitized view of a room suitable for emitting to clients.
 // Excludes timer objects and full answers to avoid circular refs and leaking answers.
 function sanitizeRoom(room) {
   if (!room) return {};
+  
+  // Sanitize players to avoid circular references
+  const sanitizedPlayers = {};
+  if (room.players && typeof room.players === 'object') {
+    for (const [id, player] of Object.entries(room.players)) {
+      if (player && typeof player === 'object') {
+        sanitizedPlayers[id] = {
+          name: player.name || null,
+          score: player.score || 0
+        };
+      }
+    }
+  }
+  
   return {
     host: room.host || null,
-    players: room.players || {},
+    players: sanitizedPlayers,
     // expose questions without answers to avoid leaking correct answers and reduce payload size
     questions: Array.isArray(room.questions) ? room.questions.map(q => ({ id: q.id, text: q.text })) : [],
     questionsCount: Array.isArray(room.questions) ? room.questions.length : 0,
@@ -253,7 +481,10 @@ function sanitizeRoom(room) {
     llmRevealMs: room.llmRevealMs || null,
     // per-character answer time in seconds (admin-configurable)
     perCharSec: (typeof room.perCharSec === 'number') ? room.perCharSec : (room.perCharSec || 3),
-    refilling: !!room.refilling
+    enableGrounding: (typeof room.enableGrounding === 'boolean') ? room.enableGrounding : true,
+    refilling: !!room.refilling,
+    llmPaused: !!room.llmPaused
+    // Explicitly exclude: autoTimer, llmTimer, currentResponder (socket.id reference), and any other circular refs
   };
 }
 
@@ -273,28 +504,59 @@ async function maybeRefill(roomId, room) {
     console.log(`maybeRefill: room ${roomId} remaining=${remaining} threshold=${threshold} refilling=${room.refilling}`);
     if (remaining <= threshold && !room.refilling) {
       console.log(`maybeRefill: room ${roomId} triggering refill of ${refillCount}`);
-      room.refilling = true;
+      // Start background refill loop which will keep retrying until success.
+      startRefillLoop(roomId, room, { topic: room.llmTopic || 'general knowledge', count: refillCount, difficulty: room.llmDifficulty || 3, genre: room.llmGenre || '', enableGrounding: room.enableGrounding !== false });
+    }
+  } catch (e) { console.warn('maybeRefill error', e); }
+}
+
+// Start a background refill loop that will attempt generateQuestionsLLM repeatedly
+// with exponential backoff + jitter until it succeeds. Emits room-state updates
+// while refilling and on completion. Multiple concurrent loops for the same
+// room are prevented by checking room.refilling.
+function startRefillLoop(roomId, room, { topic = 'general knowledge', count = 5, difficulty = 3, genre = '', enableGrounding = true } = {}) {
+  if (!room || room.refilling) return;
+  room.refilling = true;
+  io.to(roomId).emit('room-state', sanitizeRoom(room));
+
+  (async () => {
+    console.log(`startRefillLoop: room=${roomId} starting background refill`);
+    let attempt = 0;
+    let backoffBase = 1000; // start 1s
+    const maxBackoff = 30000; // cap 30s
+    while (room.refilling) {
+      attempt += 1;
       try {
-  const topic = room.llmTopic || 'general knowledge';
-  const difficulty = room.llmDifficulty || 3;
-  const genre = room.llmGenre || '';
-  const more = await generateQuestionsLLM(topic, refillCount, difficulty, genre);
+        console.log(`startRefillLoop: room=${roomId} attempt ${attempt}`);
+        const more = await generateQuestionsLLM(topic, count, difficulty, genre, enableGrounding);
         if (Array.isArray(more) && more.length) {
           const before = room.questions.length;
           room.questions = room.questions.concat(more);
           const after = room.questions.length;
-          console.log(`maybeRefill: room ${roomId} appended ${after - before} questions (total ${after})`);
+          console.log(`startRefillLoop: room ${roomId} appended ${after - before} questions (total ${after})`);
+          room.refilling = false;
           io.to(roomId).emit('room-state', sanitizeRoom(room));
-        } else {
-          console.log(`maybeRefill: room ${roomId} refill returned no questions`);
+          // notify callers that manual force-refill completed
+          try { io.to(roomId).emit('force-refill-complete', { added: after - before }); } catch (e) {}
+          return;
         }
+        console.log(`startRefillLoop: room=${roomId} generate returned empty; will retry`);
       } catch (e) {
-        console.warn('maybeRefill failed for room', roomId, e);
-      } finally {
-        room.refilling = false;
+        console.warn(`startRefillLoop: room=${roomId} attempt ${attempt} failed:`, e && e.message ? e.message : e);
       }
+
+      // compute backoff with jitter
+      const backoff = Math.min(maxBackoff, backoffBase * Math.pow(2, Math.max(0, attempt - 1)));
+      const jitter = Math.floor(Math.random() * 1000);
+      const waitMs = backoff + jitter;
+      console.log(`startRefillLoop: room=${roomId} waiting ${waitMs}ms before next attempt`);
+      await new Promise(resolve => setTimeout(resolve, waitMs));
     }
-  } catch (e) { console.warn('maybeRefill error', e); }
+    // If we exit loop because room.refilling was cleared elsewhere, ensure state emitted
+    room.refilling = false;
+    io.to(roomId).emit('room-state', sanitizeRoom(room));
+    console.log(`startRefillLoop: room=${roomId} stopped (refilling flag cleared)`);
+  })();
 }
 
 io.on('connection', (socket) => {
@@ -305,12 +567,98 @@ io.on('connection', (socket) => {
     socket.data = { roomId, name, role };
   rooms[roomId] = rooms[roomId] || { host: null, players: {}, questions: [], mode: null, started: false, currentIndex: null, answerLocked: false };
     if (role === 'host') rooms[roomId].host = socket.id;
-    if (role === 'player') rooms[roomId].players[socket.id] = { id: socket.id, name };
+    if (role === 'player') {
+      rooms[roomId].players[socket.id] = { id: socket.id, name };
+      
+      // If LLM mode was paused due to no players, resume it by triggering next question
+      const room = rooms[roomId];
+      if (room.mode === 'llm' && room.started && room.llmPaused && room.questions && room.questions.length > 0) {
+        console.log(`Player joined room ${roomId} - resuming LLM mode`);
+        room.llmPaused = false;
+        io.to(roomId).emit('llm-resumed', { reason: 'player-joined' });
+        
+        // Only resume if there's no active timer (meaning it was truly paused)
+        if (!room.llmTimer || (!room.llmTimer.questionTimer && !room.llmTimer.revealTimer)) {
+          // Resume by sending current or next question
+          const idx = (typeof room.currentIndex === 'number') ? room.currentIndex : 0;
+          const q = room.questions[idx];
+          if (q) {
+            // Send the current question
+            room.currentResponder = null;
+            room.answerLocked = false;
+            try {
+              const rawAns = q.answer || '';
+              const norm = normalizeToHiragana(rawAns);
+              const answerLength = Array.from(norm).length;
+              const qPublic = { text: q.text };
+              const interval = room.llmIntervalMs || room.autoIntervalMs || 10000;
+              io.to(roomId).emit('question', { index: idx, q: qPublic, answerLength, answerHiragana: norm, timeAllowedMs: interval });
+            } catch (e) {
+              const interval = room.llmIntervalMs || room.autoIntervalMs || 10000;
+              io.to(roomId).emit('question', { index: idx, q: { text: q.text }, answerLength: 0, timeAllowedMs: interval });
+            }
+            
+            // Restart the LLM timer cycle
+            const interval = room.llmIntervalMs || room.autoIntervalMs || 10000;
+            const revealMs = room.llmRevealMs || 3000;
+            
+            room.llmTimer = room.llmTimer || {};
+            room.llmTimer.questionTimer = setTimeout(function questionTimeout() {
+              if (!hasActivePlayers(room)) {
+                pauseLLMTimers(room, roomId);
+                return;
+              }
+              
+              const idx = room.currentIndex;
+              const q = room.questions[idx];
+              if (q) {
+                room.answerLocked = true;
+                io.to(roomId).emit('reveal-answer', { index: idx, answer: q.answer });
+              }
+              
+              room.llmTimer.revealTimer = setTimeout(async () => {
+                if (!hasActivePlayers(room)) {
+                  pauseLLMTimers(room, roomId);
+                  return;
+                }
+                
+                const nextIdx = (typeof room.currentIndex === 'number' ? room.currentIndex : 0) + 1;
+                await maybeRefill(roomId, room).catch(e => console.warn('maybeRefill error after resume', e));
+                
+                if (nextIdx >= (room.questions ? room.questions.length : 0)) {
+                  io.to(roomId).emit('auto-finished');
+                  room.llmTimer = null;
+                  return;
+                }
+                
+                const qn = room.questions[nextIdx];
+                room.currentIndex = nextIdx;
+                room.currentResponder = null;
+                room.answerLocked = false;
+                
+                try {
+                  const norm = normalizeToHiragana(qn.answer || '');
+                  const answerLength = Array.from(norm).length;
+                  const qPublic = { text: qn.text };
+                  io.to(roomId).emit('question', { index: nextIdx, q: qPublic, answerLength, answerHiragana: norm, timeAllowedMs: interval });
+                } catch (e) {
+                  io.to(roomId).emit('question', { index: nextIdx, q: { text: qn.text }, answerLength: 0, timeAllowedMs: interval });
+                }
+                
+                room.llmTimer.questionTimer = setTimeout(questionTimeout, interval);
+              }, revealMs);
+            }, interval);
+          }
+        } else {
+          console.log(`LLM timers already active, not restarting`);
+        }
+      }
+    }
 
   io.to(roomId).emit('room-state', sanitizeRoom(rooms[roomId]));
   });
 
-  socket.on('generate-llm', async ({ roomId, topic, count, difficulty, genre, llmIntervalMs, llmRevealMs, perCharSec }) => {
+  socket.on('generate-llm', async ({ roomId, topic, count, difficulty, genre, llmIntervalMs, llmRevealMs, perCharSec, enableGrounding }) => {
     const room = rooms[roomId];
     if (!room) return;
     if (topic) room.llmTopic = topic;
@@ -319,21 +667,44 @@ io.on('connection', (socket) => {
     if (typeof llmIntervalMs === 'number') room.llmIntervalMs = llmIntervalMs;
     if (typeof llmRevealMs === 'number') room.llmRevealMs = llmRevealMs;
     if (typeof perCharSec === 'number') room.perCharSec = perCharSec;
-    const questions = await generateQuestionsLLM(room.llmTopic || topic || 'general knowledge', count || 5, room.llmDifficulty || 3, room.llmGenre || '');
-    // when generating new LLM questions as part of changing settings, reset question cursor
-    room.questions = questions;
-    room.currentIndex = 0;
-    room.started = false;
-    io.to(roomId).emit('room-state', sanitizeRoom(room));
+    if (typeof enableGrounding === 'boolean') room.enableGrounding = enableGrounding;
+    // Start background refill loop; do not block socket handler. Clients will
+    // see room.refilling=true and the loop will clear it when done.
+    startRefillLoop(roomId, room, { topic: room.llmTopic || topic || 'general knowledge', count: count || 5, difficulty: room.llmDifficulty || 3, genre: room.llmGenre || '', enableGrounding: room.enableGrounding !== false });
+    socket.emit('generate-llm-started', { started: true });
   });
 
   socket.on('disconnect', () => {
     const data = socket.data || {};
-    const { roomId } = data;
+    const { roomId, role } = data;
     if (roomId && rooms[roomId]) {
-      delete rooms[roomId].players[socket.id];
-      if (rooms[roomId].host === socket.id) rooms[roomId].host = null;
-      io.to(roomId).emit('room-state', sanitizeRoom(rooms[roomId]));
+      const room = rooms[roomId];
+      
+      // Remove player or host
+      if (role === 'player') {
+        delete room.players[socket.id];
+        
+        // Check if no more players remain in LLM mode
+        if (room.mode === 'llm' && room.started && !hasActivePlayers(room)) {
+          console.log(`Last player left room ${roomId} - pausing LLM mode`);
+          pauseLLMTimers(room, roomId);
+        }
+      }
+      
+      if (room.host === socket.id) {
+        room.host = null;
+      }
+
+      // If the disconnecting socket was the current responder, clear that state
+      if (room.currentResponder === socket.id) {
+        try { if (room.answerTimer) { clearTimeout(room.answerTimer); room.answerTimer = null; } } catch(e){}
+        room.currentResponder = null;
+        room.answerLocked = false;
+        // notify room that buzzer was cancelled due to disconnect
+        try { io.to(roomId).emit('buzz-cancelled', { playerId: socket.id, name: socket.data && socket.data.name, reason: 'disconnect' }); } catch(e){}
+      }
+      
+      io.to(roomId).emit('room-state', sanitizeRoom(room));
     }
     console.log('socket disconnected', socket.id);
   });
@@ -363,7 +734,7 @@ io.on('connection', (socket) => {
   io.to(roomId).emit('room-state', sanitizeRoom(room));
   });
 
-  socket.on('set-auto-refill', ({ roomId, threshold, refillCount, topic, difficulty, genre, llmIntervalMs, llmRevealMs, perCharSec }) => {
+  socket.on('set-auto-refill', ({ roomId, threshold, refillCount, topic, difficulty, genre, llmIntervalMs, llmRevealMs, perCharSec, enableGrounding }) => {
     const room = rooms[roomId];
     if (!room) return;
     room.autoRefillThreshold = typeof threshold === 'number' ? threshold : (room.autoRefillThreshold || 2);
@@ -376,6 +747,8 @@ io.on('connection', (socket) => {
     if (typeof llmRevealMs === 'number') room.llmRevealMs = llmRevealMs;
     // per-character answer time (seconds)
     if (typeof perCharSec === 'number') room.perCharSec = perCharSec;
+    // grounding toggle
+    if (typeof enableGrounding === 'boolean') room.enableGrounding = enableGrounding;
 
     // If LLM settings changed while in llm mode, clear questions and reset to start
     try {
@@ -392,6 +765,66 @@ io.on('connection', (socket) => {
       }
     } catch (e) { /* ignore */ }
   io.to(roomId).emit('room-state', sanitizeRoom(room));
+  });
+
+  // Restart game: reset questions (regenerate if LLM mode) and reset index
+  socket.on('restart-game', async ({ roomId, topic, count, difficulty, genre, llmIntervalMs, llmRevealMs, perCharSec, threshold, enableGrounding }) => {
+    const room = rooms[roomId];
+    if (!room) return;
+    
+    // stop any running timers
+    if (room.autoTimer) {
+      try { clearInterval(room.autoTimer); } catch(e){}
+      room.autoTimer = null;
+    }
+    if (room.llmTimer) {
+      try { clearTimeout(room.llmTimer.questionTimer); } catch(e){}
+      try { clearTimeout(room.llmTimer.revealTimer); } catch(e){}
+      room.llmTimer = null;
+    }
+    
+    // reset state
+    room.currentIndex = 0;
+    room.started = false;
+    room.answerLocked = false;
+    room.currentResponder = null;
+    
+    // if LLM mode, regenerate questions with provided or existing settings
+    if (room.mode === 'llm') {
+      room.questions = [];
+      
+      // Update room settings with provided values (or keep existing)
+      if (topic) room.llmTopic = topic;
+      if (typeof difficulty !== 'undefined') room.llmDifficulty = difficulty;
+      if (typeof genre !== 'undefined') room.llmGenre = genre;
+      if (typeof count === 'number') room.autoRefillCount = count;
+      if (typeof llmIntervalMs === 'number') room.llmIntervalMs = llmIntervalMs;
+      if (typeof llmRevealMs === 'number') room.llmRevealMs = llmRevealMs;
+      if (typeof perCharSec === 'number') room.perCharSec = perCharSec;
+      if (typeof threshold === 'number') room.autoRefillThreshold = threshold;
+      if (typeof enableGrounding === 'boolean') room.enableGrounding = enableGrounding;
+      
+      const finalTopic = room.llmTopic || 'general knowledge';
+      const finalCount = room.autoRefillCount || 5;
+      const finalDifficulty = room.llmDifficulty || 3;
+      const finalGenre = room.llmGenre || '';
+      const finalEnableGrounding = room.enableGrounding !== false;
+      
+      try {
+        // Start background refill instead of waiting synchronously. Emit an
+        // immediate response; completion will be visible via room-state and
+        // 'force-refill-complete' event (same event used by background loop).
+        startRefillLoop(roomId, room, { topic: finalTopic, count: finalCount, difficulty: finalDifficulty, genre: finalGenre, enableGrounding: finalEnableGrounding });
+        socket.emit('restart-game-result', { success: true, started: true });
+      } catch (e) {
+        console.error('restart-game: failed to start background refill', e);
+        socket.emit('restart-game-result', { success: false, error: String(e) });
+      }
+    } else {
+      // for non-LLM modes, just reset index and state
+      io.to(roomId).emit('room-state', sanitizeRoom(room));
+      socket.emit('restart-game-result', { success: true, questionsCount: room.questions.length });
+    }
   });
 
   socket.on('start-game', ({ roomId }) => {
@@ -480,6 +913,14 @@ io.on('connection', (socket) => {
 
       // start flow: send first question (try refill first if none)
       (async () => {
+        // Check if there are active players before starting LLM auto-generation
+        if (!hasActivePlayers(room)) {
+          console.log(`LLM mode start skipped for room ${roomId} - no active players`);
+          io.to(roomId).emit('llm-paused', { reason: 'no-players' });
+          room.llmPaused = true;
+          return;
+        }
+        
         if (!Array.isArray(room.questions) || room.questions.length === 0) {
           await maybeRefill(roomId, room).catch(e => console.warn('initial maybeRefill for llm start-game failed', e));
         }
@@ -492,7 +933,14 @@ io.on('connection', (socket) => {
 
         // schedule question timeout
         room.llmTimer = {};
+        room.llmPaused = false;
         room.llmTimer.questionTimer = setTimeout(function questionTimeout() {
+          // Check for active players before continuing
+          if (!hasActivePlayers(room)) {
+            pauseLLMTimers(room, roomId);
+            return;
+          }
+          
           const idx = room.currentIndex;
           const q = room.questions[idx];
           if (q) {
@@ -501,6 +949,12 @@ io.on('connection', (socket) => {
           }
           // after reveal delay, advance
           room.llmTimer.revealTimer = setTimeout(async () => {
+            // Check for active players before advancing
+            if (!hasActivePlayers(room)) {
+              pauseLLMTimers(room, roomId);
+              return;
+            }
+            
             const nextIdx = (typeof room.currentIndex === 'number' ? room.currentIndex : 0) + 1;
             // try refill if needed
             await maybeRefill(roomId, room).catch(e => console.warn('maybeRefill error in llm flow', e));
@@ -537,28 +991,10 @@ io.on('connection', (socket) => {
     const room = rooms[roomId];
     if (!room) return;
     if (room.refilling) return socket.emit('error', 'already-refilling');
-    room.refilling = true;
-    try {
-      const count = room.autoRefillCount || 5;
-  const topic = room.llmTopic || 'general knowledge';
-  const difficulty = room.llmDifficulty || 3;
-  const genre = room.llmGenre || '';
-  const more = await generateQuestionsLLM(topic, count, difficulty, genre);
-      if (Array.isArray(more) && more.length) {
-        const before = room.questions.length;
-        room.questions = room.questions.concat(more);
-        const after = room.questions.length;
-        io.to(roomId).emit('room-state', sanitizeRoom(room));
-        socket.emit('force-refill-result', { added: after - before });
-      } else {
-        socket.emit('force-refill-result', { added: 0 });
-      }
-    } catch (e) {
-      console.warn('force-refill failed', e);
-      socket.emit('force-refill-error', { error: String(e) });
-    } finally {
-      room.refilling = false;
-    }
+    // Start background refill loop; notify client that refill started. When
+    // the background loop completes it will emit 'force-refill-complete'.
+    startRefillLoop(roomId, room, { topic: room.llmTopic || 'general knowledge', count: room.autoRefillCount || 5, difficulty: room.llmDifficulty || 3, genre: room.llmGenre || '', enableGrounding: room.enableGrounding !== false });
+    socket.emit('force-refill-result', { started: true });
   });
 
   socket.on('next-question', async ({ roomId, index }) => {

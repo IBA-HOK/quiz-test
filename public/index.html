@@ -5,13 +5,92 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Quiz Buzzer - Player</title>
   <style>
-    body{font-family:system-ui, -apple-system, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;display:flex;flex-direction:column;align-items:center;gap:12px;padding:20px}
+    body{font-family:system-ui, -apple-system, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;display:flex;flex-direction:column;align-items:center;gap:12px;padding:20px;position:relative;overflow-x:hidden}
     #buzzer{font-size:2rem;padding:20px 40px;background:#ff5252;color:white;border:none;border-radius:8px}
     #question{max-width:720px}
     .hidden{display:none !important}
     /* typewriter cursor when question text is being revealed */
     #qtext.typing::after { content: '|'; margin-left:6px; opacity:0.9; animation:blink 1s steps(1) infinite; }
     @keyframes blink { 50% { opacity: 0 } }
+    
+    /* Correct answer effect */
+    .correct-effect {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 5rem;
+      font-weight: bold;
+      color: #4CAF50;
+      text-shadow: 0 0 20px rgba(76, 175, 80, 0.8);
+      animation: correctPop 1.5s ease-out forwards;
+      pointer-events: none;
+      z-index: 9999;
+    }
+    @keyframes correctPop {
+      0% { transform: translate(-50%, -50%) scale(0); opacity: 0; }
+      20% { transform: translate(-50%, -50%) scale(1.3); opacity: 1; }
+      40% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+      100% { transform: translate(-50%, -50%) scale(1.1); opacity: 0; }
+    }
+    
+    /* Incorrect answer effect */
+    .incorrect-effect {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 5rem;
+      font-weight: bold;
+      color: #f44336;
+      text-shadow: 0 0 20px rgba(244, 67, 54, 0.8);
+      animation: incorrectShake 1s ease-out forwards;
+      pointer-events: none;
+      z-index: 9999;
+    }
+    @keyframes incorrectShake {
+      0% { transform: translate(-50%, -50%) rotate(0deg) scale(0); opacity: 0; }
+      10% { transform: translate(-50%, -50%) rotate(-10deg) scale(1.2); opacity: 1; }
+      20% { transform: translate(-50%, -50%) rotate(10deg) scale(1.2); opacity: 1; }
+      30% { transform: translate(-50%, -50%) rotate(-10deg) scale(1.2); opacity: 1; }
+      40% { transform: translate(-50%, -50%) rotate(10deg) scale(1.2); opacity: 1; }
+      50% { transform: translate(-50%, -50%) rotate(0deg) scale(1); opacity: 1; }
+      100% { transform: translate(-50%, -50%) rotate(0deg) scale(1); opacity: 0; }
+    }
+    
+    /* Background flash effects */
+    body.correct-flash {
+      animation: correctFlash 0.8s ease-out;
+    }
+    @keyframes correctFlash {
+      0%, 100% { background-color: white; }
+      50% { background-color: #c8e6c9; }
+    }
+    
+    body.incorrect-flash {
+      animation: incorrectFlash 0.8s ease-out;
+    }
+    @keyframes incorrectFlash {
+      0%, 100% { background-color: white; }
+      25% { background-color: #ffcdd2; }
+      50% { background-color: white; }
+      75% { background-color: #ffcdd2; }
+    }
+    
+    /* Confetti particles for correct answer */
+    .confetti {
+      position: fixed;
+      width: 10px;
+      height: 10px;
+      background-color: #f0f;
+      pointer-events: none;
+      z-index: 9998;
+      animation: confettiFall 2s ease-out forwards;
+    }
+    @keyframes confettiFall {
+      0% { transform: translateY(-100px) rotate(0deg); opacity: 1; }
+      100% { transform: translateY(100vh) rotate(720deg); opacity: 0; }
+    }
   </style>
 </head>
 <body>
@@ -28,6 +107,10 @@
     <strong style="display:block">問題</strong>
     <div id="qtext" style="font-size:1.4rem;margin:12px 0">まだ開始されていません</div>
     <div id="answer" style="font-size:1.2rem;color:#1976d2;display:none;margin-top:8px">（回答は非表示）</div>
+    <div id="sources" style="font-size:0.85rem;color:#666;margin-top:8px;display:none">
+      <strong>出典:</strong>
+      <div id="sourcesList"></div>
+    </div>
     <div id="answerInput" style="margin-top:12px"></div>
   </div>
   <button id="buzzer">早押し！</button>
@@ -35,6 +118,7 @@
 
   <div id="countdown" style="font-weight:600;margin-top:8px"></div>
   <div id="status"></div>
+  <div id="generating" style="margin-top:6px;color:#1976d2;font-weight:600;display:none">⏳ 生成中…（問題を取得中です）</div>
   <div id="othersTyping" style="margin-top:8px;font-size:0.95rem;color:#333;min-height:1.2em"></div>
 
   <script src="/socket.io/socket.io.js"></script>

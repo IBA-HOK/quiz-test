@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Google検索グラウンディング - デモ</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
+      max-width: 900px;
+      margin: 20px auto;
+      padding: 0 20px;
+      line-height: 1.6;
+    }
+    h1 {
+      color: #1976d2;
+      border-bottom: 2px solid #1976d2;
+      padding-bottom: 10px;
+    }
+    .input-section {
+      background: #f5f5f5;
+      padding: 20px;
+      border-radius: 8px;
+      margin-bottom: 30px;
+    }
+    .input-section label {
+      display: block;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+    .input-section textarea {
+      width: 100%;
+      min-height: 80px;
+      padding: 12px;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      font-size: 1rem;
+      font-family: inherit;
+      box-sizing: border-box;
+    }
+    .input-section button {
+      margin-top: 12px;
+      padding: 12px 24px;
+      background: #1976d2;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .input-section button:hover {
+      background: #1565c0;
+    }
+    .input-section button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+    .result-section {
+      display: none;
+      margin-top: 30px;
+    }
+    .result-section.visible {
+      display: block;
+    }
+    .answer-box {
+      background: white;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .answer-box h2 {
+      margin-top: 0;
+      color: #333;
+      font-size: 1.3rem;
+    }
+    .answer-text {
+      font-size: 1.1rem;
+      line-height: 1.8;
+      color: #222;
+    }
+    .citation {
+      display: inline;
+      position: relative;
+      color: #1976d2;
+      text-decoration: none;
+      font-weight: 600;
+      cursor: pointer;
+      border-bottom: 1px dotted #1976d2;
+    }
+    .citation:hover {
+      background: #e3f2fd;
+    }
+    .sources-box {
+      background: #f9f9f9;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .sources-box h3 {
+      margin-top: 0;
+      color: #333;
+      font-size: 1.2rem;
+    }
+    .source-item {
+      margin-bottom: 12px;
+      padding: 10px;
+      background: white;
+      border-left: 3px solid #1976d2;
+      border-radius: 4px;
+    }
+    .source-item strong {
+      display: block;
+      margin-bottom: 4px;
+      color: #1976d2;
+    }
+    .source-item a {
+      color: #666;
+      text-decoration: none;
+      font-size: 0.95rem;
+      word-break: break-all;
+    }
+    .source-item a:hover {
+      text-decoration: underline;
+    }
+    .queries-box {
+      background: #fff3e0;
+      border: 1px solid #ffb74d;
+      border-radius: 8px;
+      padding: 15px;
+      margin-bottom: 20px;
+    }
+    .queries-box h3 {
+      margin-top: 0;
+      color: #e65100;
+      font-size: 1.1rem;
+    }
+    .query-tag {
+      display: inline-block;
+      background: #ffcc80;
+      color: #e65100;
+      padding: 4px 10px;
+      margin: 4px;
+      border-radius: 4px;
+      font-size: 0.9rem;
+    }
+    .error-box {
+      background: #ffebee;
+      border: 1px solid #ef5350;
+      border-radius: 8px;
+      padding: 15px;
+      color: #c62828;
+      margin-bottom: 20px;
+    }
+    .loading {
+      text-align: center;
+      padding: 40px;
+      color: #666;
+      font-style: italic;
+    }
+    .info-box {
+      background: #e3f2fd;
+      border: 1px solid #1976d2;
+      border-radius: 8px;
+      padding: 15px;
+      margin-bottom: 20px;
+      font-size: 0.95rem;
+    }
+  </style>
+</head>
+<body>
+  <h1>🔍 Google検索グラウンディング - デモ</h1>
+  
+    <div class="info-box">
+    <strong>このデモについて：</strong><br>
+    Gemini API の Google 検索グラウンディング機能を使用したデモです。
+    リアルタイムのウェブ検索結果に基づいた回答を生成し、引用元を表示します。
+    <br><br>
+    <strong>プライバシーに関する注意：</strong><br>
+    入力された質問は Google の検索エンジンで処理される場合があります。
+    個人情報や機密情報は入力しないでください。
+  </div>
+
+  <div class="input-section">
+    <label for="prompt">質問を入力してください：</label>
+    <textarea id="prompt" placeholder="例：2024年のEuro優勝国は？"></textarea>
+    <button id="submitBtn">検索して回答生成</button>
+  </div>
+
+  <div id="loading" class="loading" style="display:none;">
+    読み込み中... ⏳
+  </div>
+
+  <div id="error" class="error-box" style="display:none;"></div>
+
+  <div id="result" class="result-section">
+    <div class="answer-box">
+      <h2>回答</h2>
+      <div id="answer" class="answer-text"></div>
+    </div>
+
+    <div id="queriesSection" class="queries-box" style="display:none;">
+      <h3>🔎 使用された検索クエリ</h3>
+      <div id="queries"></div>
+    </div>
+
+    <div id="sourcesSection" class="sources-box" style="display:none;">
+      <h3>📚 引用元</h3>
+      <div id="sources"></div>
+    </div>
+  </div>
+
+  <script>
+    const promptInput = document.getElementById('prompt');
+    const submitBtn = document.getElementById('submitBtn');
+    const loadingDiv = document.getElementById('loading');
+    const errorDiv = document.getElementById('error');
+    const resultDiv = document.getElementById('result');
+    const answerDiv = document.getElementById('answer');
+    const queriesDiv = document.getElementById('queries');
+    const queriesSection = document.getElementById('queriesSection');
+    const sourcesDiv = document.getElementById('sources');
+    const sourcesSection = document.getElementById('sourcesSection');
+
+    // Add citations to text based on groundingSupports
+    function addCitations(text, groundingMetadata) {
+      if (!groundingMetadata || !groundingMetadata.groundingSupports || !groundingMetadata.groundingChunks) {
+        return text;
+      }
+
+      const supports = groundingMetadata.groundingSupports;
+      const chunks = groundingMetadata.groundingChunks;
+
+      // Sort supports by endIndex in descending order to avoid index shifting
+      const sortedSupports = [...supports].sort((a, b) => 
+        (b.segment?.endIndex || 0) - (a.segment?.endIndex || 0)
+      );
+
+      let result = text;
+      
+      for (const support of sortedSupports) {
+        if (!support.segment || !support.groundingChunkIndices || support.groundingChunkIndices.length === 0) {
+          continue;
+        }
+
+        const { startIndex, endIndex } = support.segment;
+        if (typeof startIndex !== 'number' || typeof endIndex !== 'number' || startIndex < 0 || endIndex > result.length) {
+          continue;
+        }
+
+        // Get source URLs for this segment
+        const sourceUrls = support.groundingChunkIndices
+          .map(idx => chunks[idx]?.uri)
+          .filter(uri => uri);
+
+        if (sourceUrls.length === 0) continue;
+
+        // Create citation link
+        const citationNumbers = support.groundingChunkIndices.map(idx => idx + 1).join(',');
+        const citation = `<sup><a href="${sourceUrls[0]}" target="_blank" class="citation" title="引用元を開く">[${citationNumbers}]</a></sup>`;
+
+        // Insert citation after the segment
+        result = result.slice(0, endIndex) + citation + result.slice(endIndex);
+      }
+
+      return result;
+    }
+
+    // Handle submit
+    submitBtn.addEventListener('click', async () => {
+      const prompt = promptInput.value.trim();
+      
+      if (!prompt) {
+        alert('質問を入力してください');
+        return;
+      }
+
+      // Reset UI
+      submitBtn.disabled = true;
+      loadingDiv.style.display = 'block';
+      errorDiv.style.display = 'none';
+      resultDiv.classList.remove('visible');
+      answerDiv.innerHTML = '';
+      queriesDiv.innerHTML = '';
+      sourcesDiv.innerHTML = '';
+      queriesSection.style.display = 'none';
+      sourcesSection.style.display = 'none';
+
+      try {
+        // Call API
+        const response = await fetch('/api/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt })
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.error || `HTTP error ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        // Display answer with citations
+        let answerHtml = data.text || '（回答を取得できませんでした）';
+        if (data.groundingMetadata) {
+          answerHtml = addCitations(answerHtml, data.groundingMetadata);
+        }
+        answerDiv.innerHTML = answerHtml;
+
+        // Display search queries
+        if (data.groundingMetadata && data.groundingMetadata.webSearchQueries && data.groundingMetadata.webSearchQueries.length > 0) {
+          queriesSection.style.display = 'block';
+          queriesDiv.innerHTML = data.groundingMetadata.webSearchQueries
+            .map(q => `<span class="query-tag">${escapeHtml(q)}</span>`)
+            .join('');
+        }
+
+        // Display sources
+        if (data.groundingMetadata && data.groundingMetadata.groundingChunks && data.groundingMetadata.groundingChunks.length > 0) {
+          sourcesSection.style.display = 'block';
+          sourcesDiv.innerHTML = data.groundingMetadata.groundingChunks
+            .map((chunk, idx) => `
+              <div class="source-item">
+                <strong>[${idx + 1}] ${escapeHtml(chunk.title || 'ソース')}</strong>
+                <a href="${escapeHtml(chunk.uri)}" target="_blank">${escapeHtml(chunk.uri)}</a>
+              </div>
+            `)
+            .join('');
+        }
+
+        resultDiv.classList.add('visible');
+
+      } catch (error) {
+        console.error('Error:', error);
+        errorDiv.textContent = `エラー: ${error.message}`;
+        errorDiv.style.display = 'block';
+      } finally {
+        submitBtn.disabled = false;
+        loadingDiv.style.display = 'none';
+      }
+    });
+
+    // Allow Enter key to submit (Ctrl+Enter for newline)
+    promptInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.ctrlKey && !e.shiftKey) {
+        e.preventDefault();
+        submitBtn.click();
+      }
+    });
+
+    // Escape HTML
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+  </script>
+</body>
+</html>

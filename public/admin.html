@@ -4,7 +4,52 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Quiz Buzzer - Host</title>
-  <style>body{font-family:system-ui, -apple-system, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;padding:20px;max-width:900px;margin:auto}textarea{width:100%;height:120px}</style>
+  <style>
+    body{font-family:system-ui, -apple-system, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;padding:20px;max-width:900px;margin:auto;position:relative}
+    textarea{width:100%;height:120px}
+    .hidden{display:none !important}
+    
+    /* Notification effects for admin */
+    .player-correct-notification {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      padding: 16px 24px;
+      background: #4CAF50;
+      color: white;
+      border-radius: 8px;
+      font-size: 1.2rem;
+      font-weight: bold;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      animation: slideInRight 0.3s ease-out, fadeOut 0.5s ease-out 2.5s forwards;
+      z-index: 9999;
+    }
+    
+    .player-incorrect-notification {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      padding: 16px 24px;
+      background: #f44336;
+      color: white;
+      border-radius: 8px;
+      font-size: 1.2rem;
+      font-weight: bold;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      animation: slideInRight 0.3s ease-out, fadeOut 0.5s ease-out 2.5s forwards;
+      z-index: 9999;
+    }
+    
+    @keyframes slideInRight {
+      from { transform: translateX(400px); opacity: 0; }
+      to { transform: translateX(0); opacity: 1; }
+    }
+    
+    @keyframes fadeOut {
+      from { opacity: 1; }
+      to { opacity: 0; }
+    }
+  </style>
 </head>
 <body>
   <h1>出題者画面</h1>
@@ -13,43 +58,69 @@
     <button id="joinBtn">管理を開始</button>
   </div>
 
-  <div style="margin-top:12px">
-    <button id="qrBtn">QRを生成</button>
-    <div id="qr"></div>
-  </div>
+  <div id="adminControls" class="hidden">
+    <div style="margin-top:12px">
+      <button id="qrBtn">QRを生成</button>
+      <div id="qr"></div>
+    </div>
 
-  <h3>モード</h3>
-  <button data-mode="human" class="modeBtn">人が読み上げる（早押しボタン）</button>
-  <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
-    <button data-mode="auto" class="modeBtn">機械が読み上げる（問題リスト）</button>
-    <label style="font-size:0.9rem">間隔秒: <input id="autoInterval" value="10" style="width:60px" /></label>
-  </div>
-  <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
-    <label style="font-size:0.9rem">残りが <input id="refillThreshold" value="2" style="width:40px" /> 件以下になったら</label>
-    <label style="font-size:0.9rem">自動生成数: <input id="refillCount" value="5" style="width:40px" /></label>
-  </div>
-  <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
-    <label style="font-size:0.9rem">ジャンル: <input id="llmGenre" placeholder="例: 歴史、科学、雑学" style="width:160px" /></label>
-    <label style="font-size:0.9rem">難易度: <input id="llmDifficulty" type="number" min="1" max="10" value="3" style="width:60px" /></label>
-    <label style="font-size:0.9rem">LLM自動間隔(秒): <input id="llmInterval" type="number" min="3" value="10" style="width:60px" /></label>
-    <label style="font-size:0.9rem">答え表示秒数: <input id="llmRevealMs" type="number" min="500" value="3000" style="width:80px" /></label>
-  </div>
-  <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
-    <label style="font-size:0.9rem">1文字あたりの回答時間(秒): <input id="perCharSec" type="number" min="0.5" step="0.5" value="3" style="width:80px" /></label>
-  </div>
-  <div style="margin-top:8px">
-    <button id="forceRefill">手動で補充（テスト）</button>
-    <span id="forceRefillResult" style="margin-left:8px"></span>
-  </div>
-  <button data-mode="llm" class="modeBtn">LLMで自動生成</button>
+    <h3>モード</h3>
+    <button data-mode="human" class="modeBtn">人が読み上げる（早押しボタン）</button>
+    <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
+      <button data-mode="auto" class="modeBtn">機械が読み上げる（問題リスト）</button>
+      <label style="font-size:0.9rem">間隔秒: <input id="autoInterval" value="10" style="width:60px" /></label>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
+      <label style="font-size:0.9rem">残りが <input id="refillThreshold" value="2" style="width:40px" /> 件以下になったら</label>
+      <label style="font-size:0.9rem">自動生成数: <input id="refillCount" value="5" style="width:40px" /></label>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
+      <label style="font-size:0.9rem">ジャンル: <input id="llmGenre" placeholder="例: 歴史、科学、雑学" style="width:160px" /></label>
+      <label style="font-size:0.9rem">難易度: <input id="llmDifficulty" type="number" min="1" max="10" value="3" style="width:60px" /></label>
+      <label style="font-size:0.9rem">LLM自動間隔(秒): <input id="llmInterval" type="number" min="3" value="10" style="width:60px" /></label>
+      <label style="font-size:0.9rem">答え表示秒数: <input id="llmRevealMs" type="number" min="500" value="3000" style="width:80px" /></label>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
+      <label style="font-size:0.9rem">1文字あたりの回答時間(秒): <input id="perCharSec" type="number" min="0.5" step="0.5" value="3" style="width:80px" /></label>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;margin-top:6px;padding:8px;background:#e3f2fd;border-radius:4px">
+      <label style="font-size:0.9rem;font-weight:bold;cursor:pointer">
+        <input type="checkbox" id="enableGrounding" checked style="margin-right:8px;cursor:pointer;width:18px;height:18px" />
+        Google検索グラウンディングを有効にする
+      </label>
+      <span style="font-size:0.8rem;color:#666">(問題生成に最新のウェブ情報を使用)</span>
+    </div>
+    <div style="margin-top:8px">
+      <button id="forceRefill">手動で補充（テスト）</button>
+      <span id="forceRefillResult" style="margin-left:8px"></span>
+    </div>
+    <button data-mode="llm" class="modeBtn">LLMで自動生成</button>
 
-  <h3>問題編集（JSON配列）</h3>
-  <textarea id="questionsText">[ { "text": "東京は日本の首都は？", "answer": "東京" } ]</textarea>
-  <div><button id="setQs">問題セット</button> <button id="nextQ">次の問題送信</button></div>
-  <div style="margin-top:8px"><button id="revealAnswer">回答表示</button></div>
-  <div style="margin-top:12px"><button id="startGame">ゲーム開始</button></div>
+    <h3>問題編集（JSON配列）</h3>
+    <textarea id="questionsText">[ { "text": "東京は日本の首都は？", "answer": "東京" } ]</textarea>
+    <div><button id="setQs">問題セット</button> <button id="nextQ">次の問題送信</button></div>
+    <div style="margin-top:8px"><button id="revealAnswer">回答表示</button></div>
+    <div style="margin-top:12px">
+      <button id="startGame">ゲーム開始</button>
+      <button id="restartGame" style="margin-left:8px;background:#e74c3c;color:white;border:none;padding:8px 16px;cursor:pointer;border-radius:4px">🔄 問題更新/リスタート</button>
+    </div>
+    <div id="restartResult" style="margin-top:8px;color:#27ae60;font-weight:bold"></div>
+    <div id="llmStatus" style="margin-top:8px;padding:8px;background:#f39c12;color:white;border-radius:4px;display:none">
+      ⚠️ LLM自動生成が一時停止中（参加者待ち）
+    </div>
+    <div id="generating" style="margin-top:8px;padding:8px;background:#1976d2;color:white;border-radius:4px;display:none">
+      ⏳ 生成中…（問題を取得中です）
+    </div>
 
-  <div id="log"></div>
+    <div id="log"></div>
+    
+    <div id="currentQuestion" style="margin-top:20px;padding:16px;border:2px solid #3498db;border-radius:8px;background:#ecf0f1;display:none">
+      <h3 style="margin-top:0">現在の問題</h3>
+      <div id="currentQuestionText" style="font-size:1.2rem;margin:8px 0"></div>
+      <div id="currentQuestionAnswer" style="color:#27ae60;margin:8px 0"></div>
+      <div id="currentQuestionSources" style="margin-top:12px;font-size:0.9rem;color:#555"></div>
+    </div>
+  </div>
 
   <script src="/socket.io/socket.io.js"></script>
   <script src="/client.js"></script>

@@ -15,6 +15,10 @@ if (window.location.pathname.endsWith('/admin.html')) {
   const revealBtn = el('revealAnswer');
   const startGameBtn = el('startGame');
   const log = el('log');
+  const currentQuestionDiv = el('currentQuestion');
+  const currentQuestionText = el('currentQuestionText');
+  const currentQuestionAnswer = el('currentQuestionAnswer');
+  const currentQuestionSources = el('currentQuestionSources');
 
   let adminJoined = false;
   joinBtn.onclick = () => {
@@ -22,6 +26,16 @@ if (window.location.pathname.endsWith('/admin.html')) {
     socket.emit('join', { roomId, role: 'host', name: 'host' });
     adminJoined = true;
     log.innerText = `joined ${roomId}`;
+    
+    // 管理コントロールを表示
+    const adminControls = el('adminControls');
+    if (adminControls) {
+      adminControls.classList.remove('hidden');
+    }
+    
+    // ボタンを無効化または変更
+    joinBtn.disabled = true;
+    joinBtn.textContent = '管理中...';
   };
 
   qrBtn.onclick = async () => {
@@ -50,7 +64,8 @@ if (window.location.pathname.endsWith('/admin.html')) {
       const llmInterval = (el('llmInterval') && el('llmInterval').value) ? Math.max(3, parseFloat(el('llmInterval').value)) * 1000 : null;
       const llmRevealMs = (el('llmRevealMs') && el('llmRevealMs').value) ? Math.max(500, parseInt(el('llmRevealMs').value, 10)) : null;
       const perChar = (el('perCharSec') && el('perCharSec').value) ? parseFloat(el('perCharSec').value) : 3;
-  socket.emit('set-auto-refill', { roomId, threshold, refillCount, topic: genre, difficulty, genre, llmIntervalMs: llmInterval, llmRevealMs, perCharSec: perChar });
+      const enableGrounding = (el('enableGrounding') && el('enableGrounding').checked) !== false;
+  socket.emit('set-auto-refill', { roomId, threshold, refillCount, topic: genre, difficulty, genre, llmIntervalMs: llmInterval, llmRevealMs, perCharSec: perChar, enableGrounding });
       log.innerText = `mode: ${mode} (interval ${s}s, refill ${refillCount} when <=${threshold})`;
     } else {
       socket.emit('start-mode', { roomId, mode });
@@ -63,8 +78,9 @@ if (window.location.pathname.endsWith('/admin.html')) {
   const llmInterval = (el('llmInterval') && el('llmInterval').value) ? Math.max(3, parseFloat(el('llmInterval').value)) * 1000 : null;
   const llmRevealMs = (el('llmRevealMs') && el('llmRevealMs').value) ? Math.max(500, parseInt(el('llmRevealMs').value, 10)) : null;
   const perChar = (el('perCharSec') && el('perCharSec').value) ? parseFloat(el('perCharSec').value) : 3;
+  const enableGrounding = (el('enableGrounding') && el('enableGrounding').checked) !== false;
   const topic = genre || 'general knowledge';
-  socket.emit('generate-llm', { roomId, topic, count: 5, difficulty, genre, llmIntervalMs: llmInterval, llmRevealMs, perCharSec: perChar });
+  socket.emit('generate-llm', { roomId, topic, count: 5, difficulty, genre, llmIntervalMs: llmInterval, llmRevealMs, perCharSec: perChar, enableGrounding });
     }
   });
 
@@ -101,7 +117,8 @@ if (window.location.pathname.endsWith('/admin.html')) {
       const genre = (el('llmGenre') && el('llmGenre').value) ? el('llmGenre').value : '';
       const difficulty = (el('llmDifficulty') && el('llmDifficulty').value) ? parseInt(el('llmDifficulty').value, 10) : 3;
       const perChar = (el('perCharSec') && el('perCharSec').value) ? parseFloat(el('perCharSec').value) : 3;
-      socket.emit('set-auto-refill', { roomId, threshold: (el('refillThreshold') && parseInt(el('refillThreshold').value,10)) || 2, refillCount: (el('refillCount') && parseInt(el('refillCount').value,10)) || 5, topic: genre, difficulty, genre, perCharSec: perChar });
+      const enableGrounding = (el('enableGrounding') && el('enableGrounding').checked) !== false;
+      socket.emit('set-auto-refill', { roomId, threshold: (el('refillThreshold') && parseInt(el('refillThreshold').value,10)) || 2, refillCount: (el('refillCount') && parseInt(el('refillCount').value,10)) || 5, topic: genre, difficulty, genre, perCharSec: perChar, enableGrounding });
       socket.emit('force-refill', { roomId });
       forceRefillResult.innerText = '補充要求送信中...';
     };
@@ -124,10 +141,125 @@ if (window.location.pathname.endsWith('/admin.html')) {
     };
   }
 
+  const restartGameBtn = el('restartGame');
+  const restartResult = el('restartResult');
+  if (restartGameBtn) {
+    restartGameBtn.onclick = () => {
+      const roomId = roomIdInput.value || 'default-room';
+      if (!adminJoined) {
+        socket.emit('join', { roomId, role: 'host', name: 'host' });
+        adminJoined = true;
+      }
+      
+      // LLMオプションを読み取る
+      const genre = (el('llmGenre') && el('llmGenre').value) ? el('llmGenre').value : '';
+      const difficulty = (el('llmDifficulty') && el('llmDifficulty').value) ? parseInt(el('llmDifficulty').value, 10) : 3;
+      const refillCount = (el('refillCount') && el('refillCount').value) ? parseInt(el('refillCount').value, 10) : 5;
+      const llmInterval = (el('llmInterval') && el('llmInterval').value) ? Math.max(3, parseFloat(el('llmInterval').value)) * 1000 : null;
+      const llmRevealMs = (el('llmRevealMs') && el('llmRevealMs').value) ? Math.max(500, parseInt(el('llmRevealMs').value, 10)) : null;
+      const perChar = (el('perCharSec') && el('perCharSec').value) ? parseFloat(el('perCharSec').value) : 3;
+      const threshold = (el('refillThreshold') && el('refillThreshold').value) ? parseInt(el('refillThreshold').value, 10) : 2;
+      const enableGrounding = (el('enableGrounding') && el('enableGrounding').checked) !== false;
+      
+      const topic = genre || 'general knowledge';
+      
+      socket.emit('restart-game', { 
+        roomId, 
+        topic, 
+        count: refillCount,
+        difficulty, 
+        genre,
+        llmIntervalMs: llmInterval,
+        llmRevealMs,
+        perCharSec: perChar,
+        threshold,
+        enableGrounding
+      });
+      if (restartResult) restartResult.innerText = '問題更新中...';
+      log.innerText = 'restart-game requested with current LLM options';
+    };
+  }
+  socket.on('restart-game-result', ({ success, questionsCount, error }) => {
+    if (restartResult) {
+      if (success) {
+        restartResult.innerText = `✓ 問題更新完了！問題数: ${questionsCount}`;
+        setTimeout(() => { restartResult.innerText = ''; }, 3000);
+      } else {
+        restartResult.innerText = `✗ エラー: ${error}`;
+      }
+    }
+    if (log) log.innerText = `restart-game result: success=${success}, count=${questionsCount}`;
+  });
+
   socket.on('game-started', ({ started }) => { log.innerText = `game-started: ${started}`; });
 
-  socket.on('room-state', (state) => { log.innerText = JSON.stringify(state, null, 2); });
+  socket.on('room-state', (state) => { 
+    log.innerText = JSON.stringify(state, null, 2);
+    
+    // Update LLM status display
+    const llmStatus = el('llmStatus');
+    if (llmStatus) {
+      if (state.mode === 'llm' && state.llmPaused) {
+        llmStatus.style.display = 'block';
+      } else {
+        llmStatus.style.display = 'none';
+      }
+    }
+    // Show generation indicator when server-side is refilling/generating
+    const genEl = el('generating');
+    if (genEl) {
+      if (state.refilling) {
+        genEl.style.display = 'block';
+      } else {
+        genEl.style.display = 'none';
+      }
+    }
+  });
+  
+  socket.on('llm-paused', ({ reason }) => {
+    if (log) log.innerText = `LLM paused: ${reason}`;
+    const llmStatus = el('llmStatus');
+    if (llmStatus) llmStatus.style.display = 'block';
+  });
+  
+  socket.on('llm-resumed', ({ reason }) => {
+    if (log) log.innerText = `LLM resumed: ${reason}`;
+    const llmStatus = el('llmStatus');
+    if (llmStatus) llmStatus.style.display = 'none';
+  });
+  
   socket.on('buzzed', ({ playerId, name }) => { log.innerText = `BUZZ: ${name} (${playerId})`; });
+  
+  // Show notification for player answers (admin only)
+  socket.on('player-answer', ({ playerId, name, index, answer, ok }) => {
+    console.log('player-answer (admin)', name, index, ok);
+    const notification = document.createElement('div');
+    notification.className = ok ? 'player-correct-notification' : 'player-incorrect-notification';
+    notification.innerText = ok ? `✓ ${name} 正解！` : `✗ ${name} 不正解`;
+    document.body.appendChild(notification);
+    setTimeout(() => notification.remove(), 3000);
+  });
+  
+  // Display current question with sources for admin
+  socket.on('question', ({ index, q, timeAllowedMs }) => {
+    if (currentQuestionDiv) {
+      currentQuestionDiv.style.display = 'block';
+    }
+    if (currentQuestionText) {
+      currentQuestionText.innerText = `問題 ${index + 1}: ${q.text || ''}`;
+    }
+    if (currentQuestionAnswer) {
+      currentQuestionAnswer.innerText = `正解: ${q.answer || ''}`;
+    }
+    if (currentQuestionSources && q.sources && q.sources.length > 0) {
+      currentQuestionSources.innerHTML = '<strong>出典:</strong><br>' + 
+        q.sources.map((src, idx) => 
+          `${idx + 1}. <a href="${src.uri}" target="_blank" rel="noopener noreferrer" style="color:#1976d2">${src.title}</a>`
+        ).join('<br>');
+    } else if (currentQuestionSources) {
+      currentQuestionSources.innerHTML = '';
+    }
+  });
 
 } else {
   // Player UI
@@ -139,6 +271,8 @@ if (window.location.pathname.endsWith('/admin.html')) {
   const qtext = el('qtext');
   const answerDiv = el('answer');
   const answerInputDiv = el('answerInput');
+  const sourcesDiv = el('sources');
+  const sourcesList = el('sourcesList');
   const status = el('status');
   const othersTyping = el('othersTyping');
   const typingMap = {}; // playerId -> { name, partial }
@@ -245,6 +379,17 @@ if (window.location.pathname.endsWith('/admin.html')) {
   // gradually reveal question text (typewriter)
   startTypewriter(q.text || '（問題がありません）');
     if (answerDiv) { answerDiv.style.display = 'none'; answerDiv.innerText = '（回答は非表示）'; }
+    
+    // Display sources if available
+    if (sourcesDiv && sourcesList && q.sources && q.sources.length > 0) {
+      sourcesList.innerHTML = q.sources.map((src, idx) => 
+        `<div style="margin-top:4px"><a href="${src.uri}" target="_blank" rel="noopener noreferrer" style="color:#1976d2">${idx + 1}. ${src.title}</a></div>`
+      ).join('');
+      sourcesDiv.style.display = 'block';
+    } else if (sourcesDiv) {
+      sourcesDiv.style.display = 'none';
+    }
+    
     // clear previous answer input UI
     if (answerInputDiv) answerInputDiv.innerHTML = '';
     // enable buzzer so players can attempt to buzz (unless locked by another player's buzz)
@@ -485,14 +630,107 @@ if (window.location.pathname.endsWith('/admin.html')) {
   });
 
   // handle answer result for submitting player
+  // Show correct/incorrect effects
+  function showCorrectEffect() {
+    // Add effect text
+    const effect = document.createElement('div');
+    effect.className = 'correct-effect';
+    effect.innerText = '⭕ 正解！';
+    document.body.appendChild(effect);
+    setTimeout(() => effect.remove(), 1500);
+    
+    // Flash background
+    document.body.classList.add('correct-flash');
+    setTimeout(() => document.body.classList.remove('correct-flash'), 800);
+    
+    // Create confetti
+    const colors = ['#4CAF50', '#8BC34A', '#CDDC39', '#FFEB3B', '#FFC107', '#FF9800'];
+    for (let i = 0; i < 50; i++) {
+      setTimeout(() => {
+        const confetti = document.createElement('div');
+        confetti.className = 'confetti';
+        confetti.style.left = Math.random() * 100 + '%';
+        confetti.style.top = '-20px';
+        confetti.style.backgroundColor = colors[Math.floor(Math.random() * colors.length)];
+        confetti.style.animationDelay = (Math.random() * 0.3) + 's';
+        document.body.appendChild(confetti);
+        setTimeout(() => confetti.remove(), 2000);
+      }, i * 20);
+    }
+    
+    // Play sound (optional - using Web Audio API)
+    try {
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      const oscillator = audioContext.createOscillator();
+      const gainNode = audioContext.createGain();
+      oscillator.connect(gainNode);
+      gainNode.connect(audioContext.destination);
+      oscillator.frequency.value = 523.25; // C5
+      oscillator.type = 'sine';
+      gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
+      oscillator.start(audioContext.currentTime);
+      oscillator.stop(audioContext.currentTime + 0.5);
+      
+      // Add second note
+      const osc2 = audioContext.createOscillator();
+      const gain2 = audioContext.createGain();
+      osc2.connect(gain2);
+      gain2.connect(audioContext.destination);
+      osc2.frequency.value = 659.25; // E5
+      osc2.type = 'sine';
+      gain2.gain.setValueAtTime(0.3, audioContext.currentTime + 0.15);
+      gain2.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.65);
+      osc2.start(audioContext.currentTime + 0.15);
+      osc2.stop(audioContext.currentTime + 0.65);
+    } catch (e) {
+      console.warn('Audio playback failed', e);
+    }
+  }
+  
+  function showIncorrectEffect() {
+    // Add effect text
+    const effect = document.createElement('div');
+    effect.className = 'incorrect-effect';
+    effect.innerText = '✕ 不正解';
+    document.body.appendChild(effect);
+    setTimeout(() => effect.remove(), 1000);
+    
+    // Flash background
+    document.body.classList.add('incorrect-flash');
+    setTimeout(() => document.body.classList.remove('incorrect-flash'), 800);
+    
+    // Play sound (optional)
+    try {
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      const oscillator = audioContext.createOscillator();
+      const gainNode = audioContext.createGain();
+      oscillator.connect(gainNode);
+      gainNode.connect(audioContext.destination);
+      oscillator.frequency.value = 200; // Low note
+      oscillator.type = 'sawtooth';
+      gainNode.gain.setValueAtTime(0.2, audioContext.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.3);
+      oscillator.start(audioContext.currentTime);
+      oscillator.stop(audioContext.currentTime + 0.3);
+    } catch (e) {
+      console.warn('Audio playback failed', e);
+    }
+  }
+
   socket.on('answer-result', ({ index, ok, error }) => {
     if (error) {
       if (error === 'locked') status.innerText = '入力は締め切られました';
       else status.innerText = `エラー: ${error}`;
       return;
     }
-    if (ok) { status.innerText = '正解！'; }
-    else { status.innerText = '不正解。もう一度入力してください。'; }
+    if (ok) { 
+      status.innerText = '正解！';
+      showCorrectEffect();
+    } else { 
+      status.innerText = '不正解。もう一度入力してください。';
+      showIncorrectEffect();
+    }
   });
 
   socket.on('buzz-locked', ({ playerId, name }) => {
@@ -527,8 +765,19 @@ if (window.location.pathname.endsWith('/admin.html')) {
 
   // host receives info about attempts
   socket.on('player-answer', ({ playerId, name, index, answer, ok }) => {
-    // only visible to host (but all clients receive by default); client can show brief notice
+    // Show brief status update for other players
     console.log('player-answer', name, index, ok);
+    // Don't show notification for your own answer (that's handled by answer-result)
+    if (socket.id !== playerId && status) {
+      const prevStatus = status.innerText;
+      status.innerText = ok ? `${name} さんが正解しました！` : `${name} さんは不正解でした`;
+      setTimeout(() => {
+        // Restore previous status if it hasn't changed
+        if (status.innerText.includes(name)) {
+          status.innerText = prevStatus;
+        }
+      }, 2000);
+    }
   });
   socket.on('game-started', ({ started }) => {
     status.innerText = `ゲーム開始: ${started}`;
@@ -538,6 +787,15 @@ if (window.location.pathname.endsWith('/admin.html')) {
       if (qtext) qtext.innerText = 'ゲームが開始されました。出題を待ってください。';
     } else {
       if (qtext) qtext.innerText = 'まだ開始されていません';
+    }
+  });
+
+  // Update generation indicator from room state (server emits room-state periodically)
+  socket.on('room-state', (state) => {
+    const genEl = el('generating');
+    if (genEl) {
+      if (state && state.refilling) genEl.style.display = 'block';
+      else genEl.style.display = 'none';
     }
   });
 }
