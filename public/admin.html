@@ -96,6 +96,23 @@
     </div>
     <button data-mode="llm" class="modeBtn">LLMで自動生成</button>
 
+    <h3>ドキュメントから問題生成</h3>
+    <div style="padding:12px;background:#f5f5f5;border-radius:4px;margin-bottom:12px">
+      <div style="margin-bottom:8px">
+        <label style="font-weight:bold">PDF/HTMLファイルをアップロード:</label>
+        <input type="file" id="documentUpload" accept=".pdf,.html,.htm" style="margin-left:8px" />
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+        <label style="font-size:0.9rem">生成数: <input id="docQuestionCount" type="number" min="1" max="20" value="5" style="width:60px" /></label>
+        <label style="font-size:0.9rem">難易度: <input id="docDifficulty" type="number" min="1" max="10" value="3" style="width:60px" /></label>
+        <label style="font-size:0.9rem">ジャンル: <input id="docGenre" placeholder="任意" style="width:120px" /></label>
+      </div>
+      <div style="margin-top:8px">
+        <button id="generateFromDoc" style="background:#2ecc71;color:white;border:none;padding:8px 16px;cursor:pointer;border-radius:4px">📄 ドキュメントから問題生成</button>
+        <span id="docGenResult" style="margin-left:8px;font-size:0.9rem"></span>
+      </div>
+    </div>
+
     <h3>問題編集（JSON配列）</h3>
     <textarea id="questionsText">[ { "text": "東京は日本の首都は？", "answer": "東京" } ]</textarea>
     <div><button id="setQs">問題セット</button> <button id="nextQ">次の問題送信</button></div>

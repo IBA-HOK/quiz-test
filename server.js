@@ -3,7 +3,12 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const QRCode = require('qrcode');
+const multer = require('multer');
+const fs = require('fs');
 require('dotenv').config();
+
+// PDF.js for parsing PDFs
+const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js');
 
 const app = express();
 const server = http.createServer(app);
@@ -13,6 +18,12 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json()); // for parsing POST body
+
+// Configure multer for file uploads
+const upload = multer({ 
+  dest: 'uploads/',
+  limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
+});
 
 // Simple in-memory rooms store (for demo/prototyping)
 const rooms = {};
@@ -30,6 +41,206 @@ app.get('/qr', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'qr error' });
+  }
+});
+
+// POST /api/upload-document - Upload PDF or HTML and extract text
+app.post('/api/upload-document', upload.single('document'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const filePath = req.file.path;
+    const mimeType = req.file.mimetype;
+    let extractedText = '';
+
+    try {
+      if (mimeType === 'application/pdf') {
+        // Parse PDF using PDF.js
+        const dataBuffer = fs.readFileSync(filePath);
+        const data = new Uint8Array(dataBuffer);
+        const loadingTask = pdfjsLib.getDocument({ data });
+        const pdfDocument = await loadingTask.promise;
+        
+        const textParts = [];
+        for (let pageNum = 1; pageNum <= pdfDocument.numPages; pageNum++) {
+          const page = await pdfDocument.getPage(pageNum);
+          const textContent = await page.getTextContent();
+          const pageText = textContent.items.map(item => item.str).join(' ');
+          textParts.push(pageText);
+        }
+        extractedText = textParts.join('\n');
+      } else if (mimeType === 'text/html' || req.file.originalname.endsWith('.html')) {
+        // Parse HTML - strip tags for simple text extraction
+        const htmlContent = fs.readFileSync(filePath, 'utf-8');
+        extractedText = htmlContent
+          .replace(/<script[^>]*>.*?<\/script>/gis, '')
+          .replace(/<style[^>]*>.*?<\/style>/gis, '')
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+      } else {
+        // Try reading as plain text
+        extractedText = fs.readFileSync(filePath, 'utf-8');
+      }
+
+      // Clean up uploaded file
+      fs.unlinkSync(filePath);
+
+      if (!extractedText || extractedText.trim().length === 0) {
+        return res.status(400).json({ error: 'Could not extract text from document' });
+      }
+
+      // Truncate if too long (max 50000 chars to avoid API limits)
+      if (extractedText.length > 50000) {
+        extractedText = extractedText.substring(0, 50000) + '...';
+      }
+
+      return res.json({ 
+        text: extractedText,
+        length: extractedText.length,
+        filename: req.file.originalname
+      });
+    } catch (parseError) {
+      // Clean up file on error
+      try { fs.unlinkSync(filePath); } catch(e) {}
+      console.error('Document parsing error:', parseError);
+      return res.status(500).json({ 
+        error: 'Failed to parse document: ' + (parseError.message || String(parseError))
+      });
+    }
+  } catch (err) {
+    console.error('Upload error:', err);
+    return res.status(500).json({ 
+      error: 'Upload failed: ' + (err.message || String(err))
+    });
+  }
+});
+
+// POST /api/generate-from-document - Generate questions from document text
+app.post('/api/generate-from-document', async (req, res) => {
+  try {
+    const { documentText, count, difficulty, genre } = req.body;
+    
+    if (!documentText || typeof documentText !== 'string' || documentText.trim().length === 0) {
+      return res.status(400).json({ error: 'documentText is required' });
+    }
+
+    if (!genaiClient) {
+      return res.status(500).json({ 
+        error: 'Gemini API client is not initialized',
+        questions: []
+      });
+    }
+
+    const questionCount = Math.min(20, Math.max(1, parseInt(count) || 5));
+    const difficultyNum = Math.max(1, Math.min(10, parseInt(difficulty) || 3));
+    const genreDesc = genre ? `ジャンル: ${genre}` : '';
+    const difficultyDesc = `難易度 ${difficultyNum}（1=小学生レベル、10=大学専門科目レベル）`;
+    
+    // Truncate document text if too long
+    let docText = documentText;
+    if (docText.length > 30000) {
+      docText = docText.substring(0, 30000) + '...';
+    }
+
+    const prompt = `以下のドキュメント内容に基づいて、クイズ問題を生成してください。
+
+【ドキュメント内容】
+${docText}
+
+【指示】
+${genreDesc} ${difficultyDesc}
+上記のドキュメント内容に基づいて、出題者用の短いクイズ問題を日本語で${questionCount}問生成してください。
+各問題は1文で、回答も併記してください。
+回答は必ず一意に定まるように問題を出してください。
+ドキュメントの内容に基づいた事実を問う問題にしてください。
+
+【出力形式】
+JSON配列のみを返し、他のテキストは含めないでください。
+各オブジェクトの "answer" フィールドは必ずひらがなで記載してください。
+
+例: [{"text": "問題文", "answer": "こたえ"}]
+
+出力:`;
+
+    const modelId = process.env.GEMINI_MODEL || 'gemini-2.0-flash-exp';
+    
+    const genReq = {
+      model: modelId,
+      contents: [{ parts: [{ text: prompt }] }]
+    };
+
+    let response;
+    try {
+      response = await genaiClient.models.generateContent(genReq);
+    } catch (apiError) {
+      console.error('Gemini API call failed:', apiError);
+      return res.status(500).json({
+        error: 'Gemini API call failed: ' + (apiError.message || String(apiError)),
+        questions: []
+      });
+    }
+
+    let raw = '';
+    if (response && typeof response.text === 'string') {
+      raw = response.text;
+    } else if (response?.candidates && response.candidates.length) {
+      const cand = response.candidates[0];
+      if (cand?.content?.parts && cand.content.parts.length > 0 && cand.content.parts[0].text) {
+        raw = cand.content.parts[0].text;
+      }
+    }
+
+    // Parse JSON response
+    let questions = [];
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        questions = parsed.map((q, i) => ({
+          id: `doc-${Date.now()}-${i}`,
+          text: q.text || q.question || '',
+          answer: normalizeToHiragana(q.answer || q.answer_text || '')
+        })).filter(q => q.text && q.answer);
+      }
+    } catch (parseErr) {
+      // Try to extract JSON array from response
+      const s = raw.indexOf('[');
+      const e = raw.lastIndexOf(']');
+      if (s !== -1 && e !== -1 && e > s) {
+        try {
+          const sub = raw.slice(s, e + 1);
+          const parsed = JSON.parse(sub);
+          if (Array.isArray(parsed)) {
+            questions = parsed.map((q, i) => ({
+              id: `doc-${Date.now()}-${i}`,
+              text: q.text || q.question || '',
+              answer: normalizeToHiragana(q.answer || q.answer_text || '')
+            })).filter(q => q.text && q.answer);
+          }
+        } catch (e2) {
+          console.warn('Failed to parse extracted JSON:', e2);
+        }
+      }
+    }
+
+    if (questions.length === 0) {
+      return res.status(500).json({
+        error: 'Could not generate questions from document',
+        questions: [],
+        rawResponse: raw.substring(0, 500)
+      });
+    }
+
+    return res.json({ questions, count: questions.length });
+
+  } catch (err) {
+    console.error('generate-from-document error:', err);
+    return res.status(500).json({
+      error: 'Internal error: ' + (err.message || String(err)),
+      questions: []
+    });
   }
 });
 

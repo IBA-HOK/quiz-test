@@ -191,6 +191,99 @@ if (window.location.pathname.endsWith('/admin.html')) {
     if (log) log.innerText = `restart-game result: success=${success}, count=${questionsCount}`;
   });
 
+  // Document upload and question generation
+  const documentUpload = el('documentUpload');
+  const generateFromDocBtn = el('generateFromDoc');
+  const docGenResult = el('docGenResult');
+
+  if (generateFromDocBtn) {
+    generateFromDocBtn.onclick = async () => {
+      if (!documentUpload || !documentUpload.files || documentUpload.files.length === 0) {
+        if (docGenResult) docGenResult.innerText = 'ファイルを選択してください';
+        return;
+      }
+
+      const file = documentUpload.files[0];
+      const roomId = roomIdInput.value || 'default-room';
+      
+      // Ensure host has joined the room
+      if (!adminJoined) {
+        socket.emit('join', { roomId, role: 'host', name: 'host' });
+        adminJoined = true;
+      }
+
+      if (docGenResult) docGenResult.innerText = 'アップロード中...';
+      generateFromDocBtn.disabled = true;
+
+      try {
+        // Upload document
+        const formData = new FormData();
+        formData.append('document', file);
+
+        const uploadRes = await fetch('/api/upload-document', {
+          method: 'POST',
+          body: formData
+        });
+
+        if (!uploadRes.ok) {
+          const errData = await uploadRes.json();
+          throw new Error(errData.error || 'アップロード失敗');
+        }
+
+        const uploadData = await uploadRes.json();
+        if (docGenResult) docGenResult.innerText = `解析完了 (${uploadData.length}文字) - 問題生成中...`;
+
+        // Generate questions from document text
+        const count = (el('docQuestionCount') && el('docQuestionCount').value) ? parseInt(el('docQuestionCount').value, 10) : 5;
+        const difficulty = (el('docDifficulty') && el('docDifficulty').value) ? parseInt(el('docDifficulty').value, 10) : 3;
+        const genre = (el('docGenre') && el('docGenre').value) ? el('docGenre').value : '';
+
+        const genRes = await fetch('/api/generate-from-document', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            documentText: uploadData.text,
+            count: count,
+            difficulty: difficulty,
+            genre: genre
+          })
+        });
+
+        if (!genRes.ok) {
+          const errData = await genRes.json();
+          throw new Error(errData.error || '問題生成失敗');
+        }
+
+        const genData = await genRes.json();
+        
+        if (!genData.questions || genData.questions.length === 0) {
+          throw new Error('問題が生成されませんでした');
+        }
+
+        // Set questions to the room
+        socket.emit('set-questions', { roomId, questions: genData.questions });
+        
+        if (docGenResult) {
+          docGenResult.innerText = `✓ ${genData.questions.length}問を生成しました！`;
+          setTimeout(() => { docGenResult.innerText = ''; }, 3000);
+        }
+        
+        // Update questions text area
+        if (questionsText) {
+          questionsText.value = JSON.stringify(genData.questions, null, 2);
+        }
+
+        if (log) log.innerText = `Generated ${genData.questions.length} questions from document`;
+
+      } catch (err) {
+        console.error('Document generation error:', err);
+        if (docGenResult) docGenResult.innerText = `✗ エラー: ${err.message}`;
+      } finally {
+        generateFromDocBtn.disabled = false;
+      }
+    };
+  }
+
   socket.on('game-started', ({ started }) => { log.innerText = `game-started: ${started}`; });
 
   socket.on('room-state', (state) => { 
@@ -745,6 +838,9 @@ if (window.location.pathname.endsWith('/admin.html')) {
     questionCountdownRemaining = 0;
     // stop any speechSynthesis playback to avoid overlap
     try { if ('speechSynthesis' in window) window.speechSynthesis.cancel(); } catch(e){}
+    // stop typewriter effect - cancel animation and show full text immediately
+    cancelTypewriter();
+    if (lastQuestionText) qtext.innerText = lastQuestionText;
     // set lock state so subsequent 'question' events don't restart the countdown
     lockedUntilReveal = true;
     lockedBy = { playerId, name };
